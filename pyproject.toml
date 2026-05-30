@@ -1,0 +1,28 @@
+[project]
+name = "mcp-servers"
+version = "0.1.0"
+description = "Collection of MCP servers (driving distance + trails)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx",
+  "mcp",
+  "pydantic",
+  "starlette",
+  "uvicorn[standard]",
+]
+
+[project.scripts]
+mcp-http = "mcp_servers.web.app:run"
+mcp-driving-stdio = "mcp_servers.runners.stdio_driving:main"
+mcp-trails-stdio = "mcp_servers.runners.stdio_trails:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
