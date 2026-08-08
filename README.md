@@ -144,6 +144,6 @@ together on port 8080.
 
 ## Claude Custom Connector URL
 
-Use exactly:
+Use the public URL of your deployment (matching `MCP_PUBLIC_BASE_URL`), e.g.:
 
 `https://mcp.your-domain.example/`
