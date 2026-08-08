@@ -1,6 +1,11 @@
-# mcp-servers
+# TrailBear
 
-Collection of MCP servers with a modern `src/` Python package layout and `uv` project metadata.
+TrailBear is an MCP server (plus REST API and web UI) for tracking hiking
+trails, executions, and impressions — built on a modern `src/` Python
+package layout with `uv` project metadata.
+
+It started as a general "mcp-servers" collection; the driving-distance MCP
+server is still included, but trails is now the primary purpose of this repo.
 
 ## Repository layout
 
@@ -12,15 +17,21 @@ Collection of MCP servers with a modern `src/` Python package layout and `uv` pr
 │       ├── driving_distance/
 │       │   └── mcp.py
 │       ├── trails/
-│       │   ├── mcp.py
-│       │   └── repository.py
+│       │   ├── mcp.py               # MCP server (stdio/HTTP)
+│       │   ├── repository.py        # SQLite-backed repository
+│       │   ├── http_repository.py   # Repository client for remote HTTP mode
+│       │   ├── api.py               # REST API
+│       │   └── server.py            # REST API + web UI, served together
 │       ├── web/
 │       │   └── app.py
 │       └── runners/
 │           ├── stdio_driving.py
 │           └── stdio_trails.py
+├── ui/
+│   └── index.html
 ├── smoke_test.sh
 ├── Dockerfile
+├── docker-compose.yml
 └── assets/
 ```
 
@@ -122,11 +133,14 @@ chmod +x smoke_test.sh
 ## Docker
 
 ```bash
-docker build -t mcp-servers .
-docker run --rm -p 8000:8000 mcp-servers
+docker build -t trailbear .
+docker run --rm -p 8080:8080 -v "$(pwd)/data:/data" trailbear
 ```
 
-Container command uses `mcp-http`.
+Or with `docker compose up`, using the provided `docker-compose.yml`.
+
+Container command uses `mcp-trails-http`, serving the REST API and web UI
+together on port 8080.
 
 ## Claude Custom Connector URL
 
