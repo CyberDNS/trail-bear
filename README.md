@@ -7,6 +7,8 @@ package layout with `uv` project metadata.
 It started as a general "mcp-servers" collection; the driving-distance MCP
 server is still included, but trails is now the primary purpose of this repo.
 
+![TrailBear web UI](docs/screenshot.png)
+
 ## Repository layout
 
 ```text
