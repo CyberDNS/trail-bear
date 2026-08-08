@@ -1,0 +1,12 @@
+services:
+  trailbear:
+    build: .
+    container_name: trailbear
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      TRAILS_DB_PATH: /data/trails.db
+      PORT: "8080"

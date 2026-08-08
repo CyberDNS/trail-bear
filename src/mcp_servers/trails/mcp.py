@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 import re
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from mcp.server.fastmcp import FastMCP, Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from .repository import make_repository
@@ -16,9 +21,17 @@ def _default_db_url() -> str:
     if os.environ.get("TRAILS_DB_URL"):
         return os.environ["TRAILS_DB_URL"]
 
+    # Docker volume mount
+    if Path("/data").is_dir():
+        return "sqlite:////data/trails.db"
+
+    # Dev fallback: data/ next to the repo root (only works in editable install)
     repo_root = Path(__file__).resolve().parents[3]
     db_file = repo_root / "data" / "trails.db"
-    return f"sqlite:///{db_file}"
+    if db_file.exists():
+        return f"sqlite:///{db_file}"
+
+    return "sqlite:////data/trails.db"
 
 
 DEFAULT_DB_URL = _default_db_url()
@@ -64,7 +77,7 @@ class ListTrailsInput(BaseModel):
     offset: int = Field(default=0, ge=0)
     hiked: bool | None = Field(default=None, description="true: only hiked, false: only not hiked, null: all")
     rated: bool | None = Field(default=None, description="true: rated, false: unrated, null: all")
-    sort_by: Literal["rating", "distance_km", "elevation_gain_m", "drive_time_min"] | None = Field(
+    sort_by: Literal["rating", "distance_km", "elevation_gain_m", "drive_time_min", "last_executed_on"] | None = Field(
         default=None,
         description="Sort by rating, distance, ascent, or drive time",
     )
@@ -80,6 +93,7 @@ class ListTrailsInput(BaseModel):
     min_drive_duration_min: float | None = Field(default=None, ge=0)
     max_drive_duration_min: float | None = Field(default=None, ge=0)
     trail_type: str | None = Field(default=None, description="Example: Traumschleife, Auto-Pedestre")
+    format: Literal["json", "table"] = Field(default="json", description="Output format: json or markdown table")
 
 
 class GetTrailInput(BaseModel):
@@ -165,9 +179,15 @@ class ListImpressionsInput(BaseModel):
 class ListExecutionsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    trail_name: str = Field(..., min_length=2)
+    trail_name: str | None = Field(default=None, min_length=2, description="Filter by trail name. Omit to list across all trails.")
     activity_type: str | None = Field(default=None)
     limit: int = Field(default=20, ge=1, le=200)
+    sort_by: Literal["executed_on_asc", "executed_on_desc"] | None = Field(
+        default="executed_on_desc",
+        description="Sort order. Defaults to most-recent first.",
+    )
+    after: str | None = Field(default=None, description="Only executions on or after this date (YYYY-MM-DD)")
+    before: str | None = Field(default=None, description="Only executions on or before this date (YYYY-MM-DD)")
 
 
 class SetTrailGarminCourseInput(BaseModel):
@@ -337,6 +357,10 @@ async def list_trails(params: ListTrailsInput) -> str:
         }
         for r in rows
     ]
+
+    if params.format == "table":
+        return _trails_as_markdown_table(result)
+
     return json.dumps({"count": len(result), "items": result}, indent=2)
 
 
@@ -565,6 +589,9 @@ async def list_executions(params: ListExecutionsInput) -> str:
             trail_name=params.trail_name,
             limit=params.limit,
             activity_type=params.activity_type,
+            sort_by=params.sort_by,
+            after=params.after,
+            before=params.before,
         )
     except Exception as exc:
         return f"Error: {type(exc).__name__}: {exc}"
@@ -573,6 +600,7 @@ async def list_executions(params: ListExecutionsInput) -> str:
         {
             "id": row.id,
             "trail_id": row.trail_id,
+            "trail_name": row.trail_name,
             "executed_on": row.executed_on,
         }
         for row in rows
@@ -657,3 +685,105 @@ async def edit_trail(params: EditTrailInput) -> str:
         },
         indent=2,
     )
+
+
+def _fmt_duration(minutes: float | None) -> str:
+    if minutes is None:
+        return "—"
+    h = int(minutes // 60)
+    m = int(minutes % 60)
+    return f"{h}h {m:02d}m" if h > 0 else f"{m}m"
+
+
+def _trails_as_markdown_table(rows: list[dict]) -> str:
+    if not rows:
+        return "_No trails found._"
+
+    lines = [
+        "| Name | Type | km | Ascent (m) | Duration | Drive (min) | ★ |",
+        "|------|------|----|------------|----------|-------------|---|",
+    ]
+    for r in rows:
+        dist = f"{r['distance_km']:.1f}" if r["distance_km"] is not None else "—"
+        ascent = str(r["elevation_gain_m"]) if r["elevation_gain_m"] is not None else "—"
+        dur = _fmt_duration(r["hike_duration_min"])
+        drive = f"{r['drive_time_min']:.0f}" if r["drive_time_min"] is not None else "—"
+        rating = f"{r['avg_overall_rating']:.1f}" if r["avg_overall_rating"] is not None else "—"
+        trail_type = r["trail_type"] or "—"
+        lines.append(f"| {r['name']} | {trail_type} | {dist} | {ascent} | {dur} | {drive} | {rating} |")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(name="get_trails_overview")
+async def get_trails_overview() -> Image:
+    try:
+        stats = repo.get_stats()
+    except Exception as exc:
+        raise RuntimeError(f"Could not fetch trail stats — is the API reachable? ({exc})") from exc
+
+    accent = "#4a90d9"
+    hiked_color = "#2ecc71"
+    not_hiked_color = "#bdc3c7"
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.suptitle("Trails Overview", fontsize=15, fontweight="bold", y=0.98)
+    fig.patch.set_facecolor("#f8f9fa")
+    for ax in axes.flat:
+        ax.set_facecolor("#ffffff")
+
+    # Hiked vs not-hiked
+    ax = axes[0, 0]
+    not_hiked = stats.total - stats.hiked
+    ax.bar(["Hiked", "Not hiked"], [stats.hiked, not_hiked],
+           color=[hiked_color, not_hiked_color], edgecolor="white", linewidth=0.5)
+    ax.set_title("Hiked Status", fontweight="bold")
+    ax.set_ylabel("Trails")
+    for bar, val in zip(ax.patches, [stats.hiked, not_hiked]):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                str(val), ha="center", va="bottom", fontsize=10)
+
+    # Rating distribution
+    ax = axes[0, 1]
+    if stats.ratings:
+        bins = [r / 2 - 0.25 for r in range(2, 12)]
+        ax.hist(stats.ratings, bins=bins, color=accent, edgecolor="white", linewidth=0.5)
+        ax.set_title("Rating Distribution", fontweight="bold")
+        ax.set_xlabel("Stars")
+        ax.set_ylabel("Count")
+        ax.set_xticks([1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5])
+        ax.set_xlim(0.75, 5.25)
+    else:
+        ax.text(0.5, 0.5, "No ratings yet", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color="#888")
+        ax.set_title("Rating Distribution", fontweight="bold")
+
+    # Distance histogram
+    ax = axes[1, 0]
+    if stats.distances_km:
+        ax.hist(stats.distances_km, bins=15, color="#9b59b6", edgecolor="white", linewidth=0.5)
+        ax.set_title("Distance Distribution", fontweight="bold")
+        ax.set_xlabel("km")
+        ax.set_ylabel("Trails")
+    else:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Distance Distribution", fontweight="bold")
+
+    # Drive time histogram
+    ax = axes[1, 1]
+    if stats.drive_times_min:
+        ax.hist(stats.drive_times_min, bins=15, color="#e67e22", edgecolor="white", linewidth=0.5)
+        ax.set_title("Drive Time Distribution", fontweight="bold")
+        ax.set_xlabel("minutes")
+        ax.set_ylabel("Trails")
+    else:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Drive Time Distribution", fontweight="bold")
+
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return Image(data=buf.read(), format="png")

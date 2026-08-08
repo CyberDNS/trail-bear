@@ -79,14 +79,37 @@ The MCP Streamable HTTP endpoint is served directly at `/`.
 `add_impression` requires an existing `execution_id`.
 Use `add_execution` first when needed.
 
-Default DB URL:
-
-- `sqlite:////Users/david/repos/mcp-servers/data/trails.db` (repo-local)
+By default the trails database lives at `data/trails.db` (repo-local, created
+automatically on first run — see [Data / first-time setup](#data--first-time-setup)).
 
 Override with env var:
 
 ```bash
 TRAILS_DB_URL=sqlite:///absolute/path/to/trails.db
+```
+
+## Data / first-time setup
+
+The SQLite database (`data/trails.db`) and its backups are **not** checked
+into the repo — they hold personal trail data and are gitignored. When you
+clone the repo, `data/` starts empty.
+
+No manual setup is required: the tables (`trails`, `executions`,
+`impressions`) are created automatically (`CREATE TABLE IF NOT EXISTS`) the
+first time a server touches the database. Just run any of the servers above
+and `data/trails.db` will be created for you.
+
+If you want to seed some starter trails, use the `import_trails_from_asset`
+MCP tool against a GeoJSON/JSON file (see `assets/`), or start from an empty
+database and add trails via `add_trail`.
+
+To point at a database somewhere else instead (e.g. a shared location or an
+existing export), set the env var before starting a server:
+
+```bash
+export TRAILS_DB_PATH=/absolute/path/to/trails.db   # HTTP server
+# or
+export TRAILS_DB_URL=sqlite:///absolute/path/to/trails.db  # stdio server
 ```
 
 ## Smoke test

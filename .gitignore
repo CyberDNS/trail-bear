@@ -8,3 +8,10 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.DS_Store
+
+# Personal trail data (SQLite DB and backups) — self-initializes on first run
+data/*.db
+data/*.db-journal
+data/*.db.backup-*
+data/backups/

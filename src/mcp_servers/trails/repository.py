@@ -23,6 +23,7 @@ class TrailRecord:
     avg_overall_rating: float | None
     gpx_url: str | None
     garmin_course_url: str | None
+    last_executed_on: str | None = None
 
 
 @dataclass
@@ -30,6 +31,7 @@ class ExecutionRecord:
     id: int
     trail_id: int
     executed_on: str
+    trail_name: str | None = None
 
 
 @dataclass
@@ -41,6 +43,15 @@ class ImpressionRecord:
     notes: str | None
     weather: str | None
     difficulty: str | None
+
+
+@dataclass
+class TrailStats:
+    total: int
+    hiked: int
+    distances_km: list[float]
+    drive_times_min: list[float]
+    ratings: list[float]
 
 
 class TrailsRepository(Protocol):
@@ -75,6 +86,10 @@ class TrailsRepository(Protocol):
 
     def get_trail_by_name(self, name: str, activity_type: str | None = None) -> TrailRecord | None: ...
 
+    def get_trail_by_id(self, trail_id: int) -> TrailRecord | None: ...
+
+    def delete_trail(self, trail_id: int) -> bool: ...
+
     def record_execution(self, *, trail_name: str, executed_on: str, activity_type: str | None = None) -> ExecutionRecord: ...
 
     def add_impression(
@@ -89,7 +104,16 @@ class TrailsRepository(Protocol):
 
     def list_impressions(self, *, trail_name: str, limit: int, activity_type: str | None = None) -> list[ImpressionRecord]: ...
 
-    def list_executions(self, *, trail_name: str, limit: int, activity_type: str | None = None) -> list[ExecutionRecord]: ...
+    def list_executions(
+        self,
+        *,
+        trail_name: str | None = None,
+        limit: int,
+        activity_type: str | None = None,
+        sort_by: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[ExecutionRecord]: ...
 
     def update_execution(self, *, execution_id: int, executed_on: str) -> ExecutionRecord: ...
 
@@ -119,6 +143,8 @@ class TrailsRepository(Protocol):
         activity_type: str | None,
         updates: dict[str, float | int | str | None],
     ) -> TrailRecord: ...
+
+    def get_stats(self) -> TrailStats: ...
 
 
 class SQLiteTrailsRepository:
@@ -454,15 +480,22 @@ class SQLiteTrailsRepository:
             order_sql = "trails.elevation_gain_m IS NULL ASC, trails.elevation_gain_m ASC, trails.name ASC"
         elif sort_by == "drive_time_min":
             order_sql = "trails.drive_time_min IS NULL ASC, trails.drive_time_min ASC, trails.name ASC"
+        elif sort_by == "last_executed_on":
+            order_sql = "exec_stats.last_executed_on IS NULL ASC, exec_stats.last_executed_on DESC, trails.name ASC"
 
         sql = (
-            "SELECT trails.*, rating_stats.avg_overall_rating FROM trails "
+            "SELECT trails.*, rating_stats.avg_overall_rating, exec_stats.last_executed_on FROM trails "
             "LEFT JOIN ("
             "  SELECT trail_id, AVG(overall_rating) AS avg_overall_rating, COUNT(overall_rating) AS rated_count "
             "  FROM impressions "
             "  WHERE overall_rating IS NOT NULL "
             "  GROUP BY trail_id"
             ") AS rating_stats ON rating_stats.trail_id = trails.id "
+            "LEFT JOIN ("
+            "  SELECT trail_id, MAX(executed_on) AS last_executed_on "
+            "  FROM executions "
+            "  GROUP BY trail_id"
+            ") AS exec_stats ON exec_stats.trail_id = trails.id "
             f"{where_sql} "
             f"ORDER BY {order_sql} "
             "LIMIT ? OFFSET ?"
@@ -485,6 +518,20 @@ class SQLiteTrailsRepository:
         if not row:
             return None
         return self._trail_from_row(row)
+
+    def get_trail_by_id(self, trail_id: int) -> TrailRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT trails.*, NULL AS avg_overall_rating FROM trails WHERE id = ?", (trail_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return self._trail_from_row(row)
+
+    def delete_trail(self, trail_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM trails WHERE id = ?", (trail_id,))
+            return cursor.rowcount > 0
 
     def record_execution(self, *, trail_name: str, executed_on: str, activity_type: str | None = None) -> ExecutionRecord:
         with self._connect() as conn:
@@ -576,32 +623,64 @@ class SQLiteTrailsRepository:
             ).fetchall()
         return [self._impression_from_row(r) for r in rows]
 
-    def list_executions(self, *, trail_name: str, limit: int, activity_type: str | None = None) -> list[ExecutionRecord]:
+    def list_executions(
+        self,
+        *,
+        trail_name: str | None = None,
+        limit: int,
+        activity_type: str | None = None,
+        sort_by: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[ExecutionRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+
         with self._connect() as conn:
-            if activity_type:
-                trail_row = conn.execute(
-                    "SELECT id FROM trails WHERE name = ? AND LOWER(activity_type) = LOWER(?)",
-                    (trail_name, activity_type),
-                ).fetchone()
-            else:
-                trail_row = conn.execute("SELECT id FROM trails WHERE name = ?", (trail_name,)).fetchone()
-            if not trail_row:
-                raise ValueError(f"Trail not found: {trail_name}")
+            if trail_name is not None:
+                if activity_type:
+                    trail_row = conn.execute(
+                        "SELECT id FROM trails WHERE name = ? AND LOWER(activity_type) = LOWER(?)",
+                        (trail_name, activity_type),
+                    ).fetchone()
+                else:
+                    trail_row = conn.execute("SELECT id FROM trails WHERE name = ?", (trail_name,)).fetchone()
+                if not trail_row:
+                    raise ValueError(f"Trail not found: {trail_name}")
+                clauses.append("executions.trail_id = ?")
+                params.append(int(trail_row["id"]))
+            elif activity_type:
+                clauses.append("LOWER(trails.activity_type) = ?")
+                params.append(activity_type.lower())
+
+            if after:
+                clauses.append("date(executions.executed_on) >= date(?)")
+                params.append(after)
+            if before:
+                clauses.append("date(executions.executed_on) <= date(?)")
+                params.append(before)
+
+            where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            order_sql = "executions.executed_on ASC" if sort_by == "executed_on_asc" else "executions.executed_on DESC"
 
             rows = conn.execute(
-                """
-                SELECT * FROM executions
-                WHERE trail_id = ?
-                ORDER BY executed_on DESC
+                f"""
+                SELECT executions.*, trails.name AS trail_name
+                FROM executions
+                JOIN trails ON trails.id = executions.trail_id
+                {where_sql}
+                ORDER BY {order_sql}
                 LIMIT ?
                 """,
-                (int(trail_row["id"]), limit),
+                tuple(params) + (limit,),
             ).fetchall()
+
         return [
             ExecutionRecord(
                 id=int(r["id"]),
                 trail_id=int(r["trail_id"]),
                 executed_on=r["executed_on"],
+                trail_name=r["trail_name"],
             )
             for r in rows
         ]
@@ -771,8 +850,42 @@ class SQLiteTrailsRepository:
             raise RuntimeError(f"Failed to update trail: {trail_name}")
         return self._trail_from_row(updated)
 
+    def get_stats(self) -> TrailStats:
+        with self._connect() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM trails").fetchone()[0])
+            hiked = int(conn.execute(
+                "SELECT COUNT(DISTINCT trail_id) FROM executions"
+            ).fetchone()[0])
+            distances_km = [
+                float(r[0])
+                for r in conn.execute(
+                    "SELECT distance_km FROM trails WHERE distance_km IS NOT NULL"
+                ).fetchall()
+            ]
+            drive_times_min = [
+                float(r[0])
+                for r in conn.execute(
+                    "SELECT drive_time_min FROM trails WHERE drive_time_min IS NOT NULL"
+                ).fetchall()
+            ]
+            ratings = [
+                float(r[0])
+                for r in conn.execute(
+                    "SELECT overall_rating FROM impressions WHERE overall_rating IS NOT NULL"
+                ).fetchall()
+            ]
+        return TrailStats(
+            total=total,
+            hiked=hiked,
+            distances_km=distances_km,
+            drive_times_min=drive_times_min,
+            ratings=ratings,
+        )
+
     def _trail_from_row(self, row: sqlite3.Row) -> TrailRecord:
-        avg_overall_rating = row["avg_overall_rating"] if "avg_overall_rating" in row.keys() else None
+        keys = row.keys()
+        avg_overall_rating = row["avg_overall_rating"] if "avg_overall_rating" in keys else None
+        last_executed_on = row["last_executed_on"] if "last_executed_on" in keys else None
         return TrailRecord(
             id=int(row["id"]),
             name=str(row["name"]),
@@ -789,6 +902,7 @@ class SQLiteTrailsRepository:
             avg_overall_rating=float(avg_overall_rating) if avg_overall_rating is not None else None,
             gpx_url=row["gpx_url"],
             garmin_course_url=row["garmin_course_url"],
+            last_executed_on=str(last_executed_on) if last_executed_on is not None else None,
         )
 
     def _impression_from_row(self, row: sqlite3.Row) -> ImpressionRecord:
@@ -809,7 +923,11 @@ def make_repository(db_url: str) -> TrailsRepository:
         db_path = Path(db_url.removeprefix("sqlite:///"))
         return SQLiteTrailsRepository(db_path=db_path)
 
+    if db_url.startswith("http://") or db_url.startswith("https://"):
+        from .http_repository import HttpTrailsRepository
+        return HttpTrailsRepository(base_url=db_url)
+
     raise ValueError(
-        "Unsupported DB URL. Current implementation supports sqlite:/// only. "
-        "You can add Postgres by implementing TrailsRepository for that backend."
+        "Unsupported DB URL. Supports sqlite:/// or http(s)://. "
+        "Set TRAILS_DB_URL=http://your-server:8080 to use the REST API."
     )

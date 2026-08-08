@@ -1,18 +1,20 @@
 FROM python:3.12-slim
 
-# Non-root user for security
-RUN addgroup --system mcp && adduser --system --ingroup mcp mcp
-
 WORKDIR /app
 
-# Install uv and project dependencies
 RUN pip install --no-cache-dir uv
+
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY ui ./ui
 RUN uv pip install --system .
 
-USER mcp
+RUN mkdir -p /data
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["mcp-http"]
+ENV TRAILS_DB_PATH=/data/trails.db \
+    PORT=8080 \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+CMD ["mcp-trails-http"]

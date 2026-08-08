@@ -5,9 +5,13 @@ description = "Collection of MCP servers (driving distance + trails)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "fastapi",
   "httpx",
+  "jinja2",
+  "matplotlib",
   "mcp",
   "pydantic",
+  "python-multipart",
   "starlette",
   "uvicorn[standard]",
 ]
@@ -16,6 +20,7 @@ dependencies = [
 mcp-http = "mcp_servers.web.app:run"
 mcp-driving-stdio = "mcp_servers.runners.stdio_driving:main"
 mcp-trails-stdio = "mcp_servers.runners.stdio_trails:main"
+mcp-trails-http = "mcp_servers.trails.server:run"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
