@@ -9,7 +9,7 @@ dependencies = [
   "httpx",
   "jinja2",
   "matplotlib",
-  "mcp",
+  "mcp==1.27.0",
   "pydantic",
   "python-multipart",
   "starlette",

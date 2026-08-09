@@ -141,11 +141,17 @@ docker run --rm -p 8080:8080 -v "$(pwd)/data:/data" trailbear
 
 Or with `docker compose up`, using the provided `docker-compose.yml`.
 
-Container command uses `mcp-trails-http`, serving the REST API and web UI
-together on port 8080.
+Container command uses `mcp-http`, serving the web UI and REST API at `/`
+and one combined MCP endpoint (trails + driving-distance tools) at `/mcp`,
+all on port 8080.
 
-## Claude Custom Connector URL
+`mcp-trails-http` remains available separately if you only want the REST
+API + UI without the MCP endpoint.
 
-Use the public URL of your deployment (matching `MCP_PUBLIC_BASE_URL`), e.g.:
+## MCP endpoint
 
-`https://mcp.your-domain.example/`
+No authentication is done by TrailBear itself — it's expected to run behind
+an MCP aggregator or reverse proxy that handles auth. Point your aggregator
+or MCP client at:
+
+`https://your-deployment/mcp`

@@ -17,4 +17,4 @@ ENV TRAILS_DB_PATH=/data/trails.db \
     PORT=8080 \
     MPLCONFIGDIR=/tmp/matplotlib
 
-CMD ["mcp-trails-http"]
+CMD ["mcp-http"]
